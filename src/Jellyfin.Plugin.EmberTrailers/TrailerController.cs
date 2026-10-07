@@ -91,7 +91,7 @@ public class TrailerController : ControllerBase
             lastError = _yt.LastError,
             maxHeight = Plugin.Instance?.Configuration.MaxHeight,
             verifiedOnly = Plugin.Instance?.Configuration.VerifiedOnly,
-            features = new[] { "trailers", "calendar", "reasons" },
+            features = new[] { "trailers", "calendar", "reasons", "streamtest" },
             jsRuntime = _yt.HasDeno ? "deno" : null,
             jsRuntimeError = _yt.DenoError,
             calendarKey = _calendar.ApiKey() is null ? "none" : _calendar.KeySource,
@@ -218,7 +218,91 @@ public class TrailerController : ControllerBase
         return meta;
     }
 
-    /// <summary>Streams the trailer as Matroska while it is fetched. Nothing is written to disk.</summary>
+    /// <summary>
+    /// Admin diagnostics: runs the real streaming pipeline for up to 40 seconds and reports how it went.
+    /// </summary>
+    [HttpGet("Videos/{key}/Test")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<ActionResult<object>> TestStream([FromRoute] string key, CancellationToken ct)
+    {
+        if (!YtDlpService.IsValidKey(key))
+        {
+            return BadRequest();
+        }
+
+        var sw = Stopwatch.StartNew();
+        var (meta, reason) = await _yt.GetMetaWithReasonAsync(key, ct).ConfigureAwait(false);
+        var infoMs = sw.ElapsedMilliseconds;
+        if (meta is null)
+        {
+            return new { ok = false, stage = "info", infoMs, error = reason };
+        }
+
+        sw.Restart();
+        using var p = await _yt.StartStreamAsync(key, ct).ConfigureAwait(false);
+        var errTask = p.StandardError.ReadToEndAsync(CancellationToken.None);
+        var buffer = new byte[64 * 1024];
+        long total = 0;
+        long? firstByteMs = null;
+        byte first = 0;
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(TimeSpan.FromSeconds(40));
+        try
+        {
+            int n;
+            while (total < 8_000_000 && (n = await p.StandardOutput.BaseStream.ReadAsync(buffer, limit.Token).ConfigureAwait(false)) > 0)
+            {
+                if (firstByteMs is null)
+                {
+                    firstByteMs = sw.ElapsedMilliseconds;
+                    first = buffer[0];
+                }
+
+                total += n;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        var seconds = sw.Elapsed.TotalSeconds;
+        try
+        {
+            if (!p.HasExited)
+            {
+                p.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        var err = string.Empty;
+        try
+        {
+            err = await errTask.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+        }
+
+        var lines = err.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return new
+        {
+            ok = total > 500_000,
+            stage = "stream",
+            infoMs,
+            firstByteMs,
+            bytes = total,
+            mbps = seconds > 0 ? Math.Round(total * 8 / seconds / 1_000_000, 1) : 0,
+            container = firstByteMs is null ? null : first == 0x47 ? "mpegts" : "matroska",
+            deno = _yt.HasDeno,
+            channel = meta.Channel,
+            error = lines.LastOrDefault(),
+        };
+    }
+
+    /// <summary>Streams the trailer while it is fetched. Nothing is written to disk.</summary>
     [HttpGet("Videos/{key}/Stream")]
     public async Task Stream([FromRoute] string key, CancellationToken ct)
     {
@@ -254,7 +338,8 @@ public class TrailerController : ControllerBase
                     if (!started)
                     {
                         started = true;
-                        Response.ContentType = "video/x-matroska";
+                        // HLS arrives as MPEG-TS (starts with 0x47), joined streams as Matroska.
+                        Response.ContentType = buffer[0] == 0x47 ? "video/mp2t" : "video/x-matroska";
                         Response.Headers.CacheControl = "no-store";
                         _yt.Succeed();
                     }

@@ -8,6 +8,22 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.4.1.0",
+        "changelog": "Trailers start faster and more reliably: prefers YouTube's ready-combined HD streams instead of joining video and audio live. Adds a playback test for admins in Ember. (Jellyfin 12)",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.4.1.0.zip",
+        "checksum": "de587941a2f57eb89724817d31841972",
+        "timestamp": "2026-10-07T20:51:19Z"
+      },
+      {
+        "version": "0.4.0.1",
+        "changelog": "Trailers start faster and more reliably: prefers YouTube's ready-combined HD streams instead of joining video and audio live. Adds a playback test for admins in Ember. (Jellyfin 10.11)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.4.0.1.zip",
+        "checksum": "60a4d443265b6e726a421d479b480dab",
+        "timestamp": "2026-10-07T20:51:19Z"
+      },
+      {
         "version": "0.3.1.0",
         "changelog": "Fixes trailers falling back to YouTube: downloads Deno (the JavaScript runtime yt-dlp now needs for YouTube), trusts trailers TMDB marks as official, and tells Ember why a trailer could not play. (Jellyfin 12)",
         "targetAbi": "12.1.0.0",

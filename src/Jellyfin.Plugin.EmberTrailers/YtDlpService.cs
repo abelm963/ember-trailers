@@ -317,12 +317,16 @@ public sealed partial class YtDlpService
     {
         await EnsureAsync(ct).ConfigureAwait(false);
         var h = Math.Clamp(Config.MaxHeight, 360, 2160);
-        var format = $"bv*[height<={h}][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<={h}]+ba/b[height<={h}]/b";
+        // Prefer YouTube's ready-combined HLS streams (video + audio in one, up to 1080p): they start
+        // fast and need no live merging. Fall back to joining separate video and audio.
+        var format = $"b[protocol^=m3u8][height<={h}][vcodec^=avc1]/b[protocol^=m3u8][height<={h}]/" +
+                     $"bv*[height<={h}][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<={h}]+ba/b[height<={h}]/b";
         var args = new List<string>
         {
             "--no-playlist", "--no-warnings", "--quiet", "--no-part", "--no-cache-dir",
             "-f", format,
             "--merge-output-format", "mkv",
+            "--hls-use-mpegts",
             "-o", "-",
         };
         var ffmpeg = _encoder.EncoderPath;
