@@ -149,7 +149,107 @@ public sealed partial class YtDlpService
         {
             await UpdateAsync(ct).ConfigureAwait(false);
         }
+
+        await EnsureDenoAsync(ct).ConfigureAwait(false);
     }
+
+    // ---- Deno: yt-dlp needs a JavaScript runtime to read YouTube's players. Without one, many
+    // videos fail with "This video is not available" or lose their formats.
+
+    private DateTime _denoTriedAt = DateTime.MinValue;
+
+    public string DenoPath => Path.Combine(
+        Plugin.Instance?.DataFolderPath ?? Path.Combine(Path.GetTempPath(), "ember-trailers"),
+        OperatingSystem.IsWindows() ? "deno.exe" : "deno");
+
+    public bool HasDeno => File.Exists(DenoPath);
+
+    public string? DenoError { get; private set; }
+
+    private static string? DenoTarget()
+    {
+        var arch = RuntimeInformation.OSArchitecture;
+        if (OperatingSystem.IsWindows())
+        {
+            return arch == Architecture.X64 ? "x86_64-pc-windows-msvc" : null;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            return arch == Architecture.Arm64 ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+        }
+
+        return arch switch
+        {
+            Architecture.X64 => "x86_64-unknown-linux-gnu",
+            Architecture.Arm64 => "aarch64-unknown-linux-gnu",
+            _ => null,
+        };
+    }
+
+    /// <summary>Downloads Deno next to yt-dlp if it isn't there (tries at most once an hour).</summary>
+    public async Task EnsureDenoAsync(CancellationToken ct, bool force = false)
+    {
+        if ((HasDeno && !force) || (!force && DateTime.UtcNow - _denoTriedAt < TimeSpan.FromHours(1)))
+        {
+            return;
+        }
+
+        _denoTriedAt = DateTime.UtcNow;
+        var target = DenoTarget();
+        if (target is null)
+        {
+            DenoError = "No Deno build for this server's processor.";
+            return;
+        }
+
+        await _updateLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var path = DenoPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using var client = _http.CreateClient();
+            client.Timeout = TimeSpan.FromMinutes(5);
+            var zip = path + ".zip";
+            await using (var src = await client.GetStreamAsync($"https://github.com/denoland/deno/releases/latest/download/deno-{target}.zip", ct).ConfigureAwait(false))
+            await using (var dst = File.Create(zip))
+            {
+                await src.CopyToAsync(dst, ct).ConfigureAwait(false);
+            }
+
+            using (var archive = System.IO.Compression.ZipFile.OpenRead(zip))
+            {
+                var entry = archive.Entries.First(e => e.Name is "deno" or "deno.exe");
+                await using var from = entry.Open();
+                await using var to = File.Create(path + ".new");
+                await from.CopyToAsync(to, ct).ConfigureAwait(false);
+            }
+
+            File.Delete(zip);
+            File.Move(path + ".new", path, overwrite: true);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
+
+            DenoError = null;
+            _meta.Clear(); // earlier failures may have been for lack of Deno
+            _log.LogInformation("Ember Trailers: Deno installed for yt-dlp");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            DenoError = e.Message;
+            _log.LogWarning(e, "Ember Trailers: couldn't download Deno; YouTube may refuse some trailers");
+        }
+        finally
+        {
+            _updateLock.Release();
+        }
+    }
+
+    private IEnumerable<string> RuntimeArgs() =>
+        HasDeno ? new[] { "--js-runtimes", $"deno:{DenoPath}" } : Array.Empty<string>();
 
     public async Task<string?> VersionAsync(CancellationToken ct)
     {
@@ -163,11 +263,14 @@ public sealed partial class YtDlpService
     }
 
     /// <summary>Looks up a video's title, channel and whether the channel is verified (cached for a day).</summary>
-    public async Task<VideoMeta?> GetMetaAsync(string key, CancellationToken ct)
+    public async Task<VideoMeta?> GetMetaAsync(string key, CancellationToken ct) => (await GetMetaWithReasonAsync(key, ct).ConfigureAwait(false)).Meta;
+
+    /// <summary>Like <see cref="GetMetaAsync"/>, but also says why a video couldn't be read.</summary>
+    public async Task<(VideoMeta? Meta, string? Reason)> GetMetaWithReasonAsync(string key, CancellationToken ct)
     {
         if (_meta.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.At < MetaTtl)
         {
-            return hit.Meta;
+            return (hit.Meta, null);
         }
 
         await EnsureAsync(ct).ConfigureAwait(false);
@@ -178,7 +281,7 @@ public sealed partial class YtDlpService
         if (code != 0)
         {
             Fail(error);
-            return null;
+            return (null, "YouTube: " + LastError);
         }
 
         try
@@ -194,12 +297,12 @@ public sealed partial class YtDlpService
                 Str(r, "availability") is "" or "public" or "unlisted");
             _meta[key] = (DateTime.UtcNow, meta);
             Succeed();
-            return meta;
+            return (meta, null);
         }
         catch (JsonException e)
         {
             Fail(e.Message);
-            return null;
+            return (null, "Couldn't read YouTube's answer");
         }
     }
 
@@ -237,7 +340,7 @@ public sealed partial class YtDlpService
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        foreach (var a in args)
+        foreach (var a in RuntimeArgs().Concat(args))
         {
             psi.ArgumentList.Add(a);
         }
@@ -285,7 +388,7 @@ public sealed partial class YtDlpService
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        foreach (var a in args)
+        foreach (var a in RuntimeArgs().Concat(args))
         {
             psi.ArgumentList.Add(a);
         }

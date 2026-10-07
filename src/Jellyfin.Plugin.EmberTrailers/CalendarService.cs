@@ -118,6 +118,63 @@ public class CalendarService
         return null;
     }
 
+    private readonly ConcurrentDictionary<string, (DateTime At, List<string> Keys)> _trailers = new();
+
+    /// <summary>YouTube keys of trailers TMDB marks as official, best first (cached for a day).</summary>
+    public async Task<List<string>> OfficialTrailerKeysAsync(string mediaType, int tmdbId, CancellationToken ct)
+    {
+        var cacheKey = $"{mediaType}:{tmdbId}";
+        if (_trailers.TryGetValue(cacheKey, out var hit) && DateTime.UtcNow - hit.At < TimeSpan.FromHours(24))
+        {
+            return hit.Keys;
+        }
+
+        var key = ApiKey();
+        if (key is null)
+        {
+            return new();
+        }
+
+        try
+        {
+            using var client = _http.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(15);
+            var bearer = key.Length > 40;
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                $"https://api.themoviedb.org/3/{mediaType}/{tmdbId}/videos?include_video_language=en,null" + (bearer ? string.Empty : $"&api_key={key}"));
+            if (bearer)
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            }
+
+            using var res = await client.SendAsync(req, ct).ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode)
+            {
+                return new();
+            }
+
+            var json = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+            var keys = (json?["results"]?.AsArray() ?? new JsonArray())
+                .Where(v => v?["site"]?.GetValue<string>() == "YouTube" && v?["type"]?.GetValue<string>() == "Trailer" && v?["official"]?.GetValue<bool>() == true)
+                .OrderByDescending(v => (v?["name"]?.GetValue<string>() ?? string.Empty).Contains("Official Trailer", StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(v => v?["size"]?.GetValue<int>() ?? 0)
+                .ThenBy(v => v?["published_at"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal)
+                .Select(v => v?["key"]?.GetValue<string>())
+                .Where(YtDlpService.IsValidKey)
+                .Select(k => k!)
+                .Distinct()
+                .Take(3)
+                .ToList();
+            _trailers[cacheKey] = (DateTime.UtcNow, keys);
+            return keys;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.LogDebug(e, "Ember: TMDB trailer lookup failed");
+            return new();
+        }
+    }
+
     public async Task<List<CalendarEntry>> GetAsync(string region, int days, CancellationToken ct)
     {
         region = string.IsNullOrWhiteSpace(region) || region.Length != 2 ? "US" : region.ToUpperInvariant();

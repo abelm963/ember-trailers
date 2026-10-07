@@ -8,6 +8,22 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.3.1.0",
+        "changelog": "Fixes trailers falling back to YouTube: downloads Deno (the JavaScript runtime yt-dlp now needs for YouTube), trusts trailers TMDB marks as official, and tells Ember why a trailer could not play. (Jellyfin 12)",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.3.1.0.zip",
+        "checksum": "2eb71ca37dc289ebf7201b06e6e619c5",
+        "timestamp": "2026-10-07T20:36:29Z"
+      },
+      {
+        "version": "0.3.0.1",
+        "changelog": "Fixes trailers falling back to YouTube: downloads Deno (the JavaScript runtime yt-dlp now needs for YouTube), trusts trailers TMDB marks as official, and tells Ember why a trailer could not play. (Jellyfin 10.11)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.3.0.1.zip",
+        "checksum": "1b29f1841e97d8d50a99d14c56d044ed",
+        "timestamp": "2026-10-07T20:36:29Z"
+      },
+      {
         "version": "0.2.1.0",
         "changelog": "Adds the Coming Soon release calendar: movies with cinema and digital dates, new series and new seasons, from TMDB (Jellyfin's key) and optionally Trakt. (Jellyfin 12)",
         "targetAbi": "12.1.0.0",

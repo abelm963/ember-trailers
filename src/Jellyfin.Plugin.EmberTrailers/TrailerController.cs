@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -75,6 +76,10 @@ public class TrailerController : ControllerBase
     public async Task<ActionResult<object>> Health(CancellationToken ct)
     {
         var version = await _yt.VersionAsync(ct).ConfigureAwait(false);
+        if (version is not null && !_yt.HasDeno)
+        {
+            _ = _yt.EnsureDenoAsync(CancellationToken.None);
+        }
         string status = version is null ? "Offline" : _yt.FailuresInARow >= 3 ? "Degraded" : "Online";
         return new
         {
@@ -86,7 +91,9 @@ public class TrailerController : ControllerBase
             lastError = _yt.LastError,
             maxHeight = Plugin.Instance?.Configuration.MaxHeight,
             verifiedOnly = Plugin.Instance?.Configuration.VerifiedOnly,
-            features = new[] { "trailers", "calendar" },
+            features = new[] { "trailers", "calendar", "reasons" },
+            jsRuntime = _yt.HasDeno ? "deno" : null,
+            jsRuntimeError = _yt.DenoError,
             calendarKey = _calendar.ApiKey() is null ? "none" : _calendar.KeySource,
             calendarError = _calendar.LastError,
             traktConfigured = !string.IsNullOrWhiteSpace(Plugin.Instance?.Configuration.TraktClientId),
@@ -112,6 +119,20 @@ public class TrailerController : ControllerBase
             candidates.Add((ov.YouTubeKey, "override"));
         }
 
+        // Trailers TMDB marks as official are trusted even when YouTube doesn't show a verified badge.
+        var tmdbId = item.GetProviderId("Tmdb");
+        var mediaType = item is MediaBrowser.Controller.Entities.TV.Series ? "tv" : "movie";
+        if (int.TryParse(tmdbId, out var tid))
+        {
+            foreach (var key in await _calendar.OfficialTrailerKeysAsync(mediaType, tid, ct).ConfigureAwait(false))
+            {
+                if (candidates.All(c => c.Key != key))
+                {
+                    candidates.Add((key, "tmdb-official"));
+                }
+            }
+        }
+
         foreach (var t in item.RemoteTrailers ?? Array.Empty<MediaBrowser.Model.Entities.MediaUrl>())
         {
             var key = YtDlpService.KeyFromUrl(t.Url);
@@ -121,16 +142,26 @@ public class TrailerController : ControllerBase
             }
         }
 
-        foreach (var (key, source) in candidates.Take(4))
+        var reasons = new List<string>();
+        foreach (var (key, source) in candidates.Take(5))
         {
-            var r = await Check(key, source == "override", ct).ConfigureAwait(false);
+            var (r, reason) = await CheckWithReason(key, source is "override" or "tmdb-official", ct).ConfigureAwait(false);
             if (r is not null)
             {
                 return new { available = true, key, source, title = r.Title, channel = r.Channel, verified = r.Verified, duration = r.Duration };
             }
+
+            reasons.Add(reason ?? "not playable");
         }
 
-        return new { available = false, key = (string?)null, source = (string?)null };
+        return new
+        {
+            available = false,
+            key = (string?)null,
+            source = (string?)null,
+            reason = candidates.Count == 0 ? "No trailer is listed for this title." : reasons.FirstOrDefault(),
+            reasons,
+        };
     }
 
     /// <summary>Checks a specific YouTube video (used for titles that are not in the library yet, from Seerr).</summary>
@@ -142,10 +173,32 @@ public class TrailerController : ControllerBase
             return BadRequest();
         }
 
-        var r = await Check(key, false, ct).ConfigureAwait(false);
+        var (r, reason) = await CheckWithReason(key, false, ct).ConfigureAwait(false);
         return r is null
-            ? new { available = false, key }
+            ? new { available = false, key, reason }
             : new { available = true, key, title = r.Title, channel = r.Channel, verified = r.Verified, duration = r.Duration };
+    }
+
+    private async Task<(VideoMeta? Meta, string? Reason)> CheckWithReason(string key, bool trusted, CancellationToken ct)
+    {
+        var (meta, reason) = await _yt.GetMetaWithReasonAsync(key, ct).ConfigureAwait(false);
+        if (meta is null)
+        {
+            return (null, reason);
+        }
+
+        if (!meta.Playable)
+        {
+            return (null, "The video is private or blocked.");
+        }
+
+        var verifiedOnly = Plugin.Instance?.Configuration.VerifiedOnly ?? true;
+        if (verifiedOnly && !trusted && !meta.Verified)
+        {
+            return (null, $"From an unverified channel ({meta.Channel}).");
+        }
+
+        return (meta, null);
     }
 
     private async Task<VideoMeta?> Check(string key, bool trusted, CancellationToken ct)
