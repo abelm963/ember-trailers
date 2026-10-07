@@ -1,6 +1,11 @@
 # Ember Trailers
 
-A Jellyfin plugin that streams official trailers to the [Ember](#) app through your own server. Nothing is downloaded or stored.
+A Jellyfin plugin for the Ember app:
+
+- **Trailers** – streams official YouTube trailers through your own server. Nothing is downloaded or stored.
+- **Coming Soon calendar** – movies (cinema and digital release dates), new series and new seasons for the next few months, from TMDB using the key your Jellyfin already has. Add a Trakt Client ID (in Ember, admin profile) to include Trakt's most anticipated titles.
+
+API keys are kept in the plugin's settings on your server only; they are never part of the app or this repository.
 
 ## Install
 

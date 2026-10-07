@@ -2,11 +2,27 @@
   {
     "guid": "6f1c8f2e-6a43-4c4e-9d55-5e2a7b3c9e11",
     "name": "Ember Trailers",
-    "description": "Picks the official trailer for each title from TMDB and streams it through your server with yt-dlp, which the plugin keeps up to date by itself. Built for the Ember Jellyfin client.",
-    "overview": "Streams official YouTube trailers through your Jellyfin server for the Ember app. Nothing is stored.",
+    "description": "Streams official YouTube trailers through your server with yt-dlp (kept up to date automatically) and builds Ember's Coming Soon calendar from TMDB using the key Jellyfin already has, plus Trakt if you add a key. Nothing is stored.",
+    "overview": "Official trailers and a release calendar for the Ember app, served by your Jellyfin server.",
     "owner": "Ember",
     "category": "General",
     "versions": [
+      {
+        "version": "0.2.1.0",
+        "changelog": "Adds the Coming Soon release calendar: movies with cinema and digital dates, new series and new seasons, from TMDB (Jellyfin's key) and optionally Trakt. (Jellyfin 12)",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.2.1.0.zip",
+        "checksum": "4213b06497c0888bb3a6f0a1d8e4d10c",
+        "timestamp": "2026-10-07T20:26:19Z"
+      },
+      {
+        "version": "0.2.0.1",
+        "changelog": "Adds the Coming Soon release calendar: movies with cinema and digital dates, new series and new seasons, from TMDB (Jellyfin's key) and optionally Trakt. (Jellyfin 10.11)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.2.0.1.zip",
+        "checksum": "0612346515c589391ccb150745080b9d",
+        "timestamp": "2026-10-07T20:26:19Z"
+      },
       {
         "version": "0.1.1.0",
         "changelog": "First release (Jellyfin 12).",

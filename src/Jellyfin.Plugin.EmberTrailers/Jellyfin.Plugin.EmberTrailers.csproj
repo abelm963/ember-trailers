@@ -27,4 +27,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CalendarProbe" />
+  </ItemGroup>
 </Project>

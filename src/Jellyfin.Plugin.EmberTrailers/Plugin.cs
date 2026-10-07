@@ -50,6 +50,12 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets admin-chosen trailers that replace the automatic pick.</summary>
     public List<TrailerOverride> Overrides { get; set; } = new();
+
+    /// <summary>Gets or sets an optional TMDB key for the release calendar; empty uses the one Jellyfin already has.</summary>
+    public string TmdbApiKey { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets an optional Trakt client id; adds Trakt's most anticipated titles to the calendar. Stored on the server only.</summary>
+    public string TraktClientId { get; set; } = string.Empty;
 }
 
 public class ServiceRegistrator : IPluginServiceRegistrator
@@ -57,5 +63,6 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
         serviceCollection.AddSingleton<YtDlpService>();
+        serviceCollection.AddSingleton<CalendarService>();
     }
 }

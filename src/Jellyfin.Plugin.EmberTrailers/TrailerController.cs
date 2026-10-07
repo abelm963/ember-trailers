@@ -14,11 +14,60 @@ public class TrailerController : ControllerBase
 {
     private readonly YtDlpService _yt;
     private readonly ILibraryManager _library;
+    private readonly CalendarService _calendar;
 
-    public TrailerController(YtDlpService yt, ILibraryManager library)
+    public TrailerController(YtDlpService yt, ILibraryManager library, CalendarService calendar)
     {
         _yt = yt;
         _library = library;
+        _calendar = calendar;
+    }
+
+    /// <summary>
+    /// Saves the calendar keys (admins only). Keys stay in the plugin's settings on this server and are
+    /// never sent back to apps; only whether one is set is reported.
+    /// </summary>
+    [HttpPost("CalendarKeys")]
+    [Authorize(Policy = "RequiresElevation")]
+    public ActionResult SetCalendarKeys([FromBody] CalendarKeys keys)
+    {
+        var plugin = Plugin.Instance;
+        if (plugin is null)
+        {
+            return NotFound();
+        }
+
+        if (keys.TraktClientId is not null)
+        {
+            plugin.Configuration.TraktClientId = keys.TraktClientId.Trim();
+        }
+
+        if (keys.TmdbApiKey is not null)
+        {
+            plugin.Configuration.TmdbApiKey = keys.TmdbApiKey.Trim();
+        }
+
+        plugin.SaveConfiguration();
+        _calendar.Clear();
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Ember's release calendar: popular movies (cinema and digital dates), new series and new seasons
+    /// for the next <paramref name="days"/> days, from TMDB with the key Jellyfin already uses. Cached for 6 hours.
+    /// </summary>
+    [HttpGet("Calendar")]
+    public async Task<ActionResult<object>> Calendar([FromQuery] string? region, [FromQuery] int days = 120, CancellationToken ct = default)
+    {
+        try
+        {
+            var items = await _calendar.GetAsync(region ?? "US", days, ct).ConfigureAwait(false);
+            return new { region = (region ?? "US").ToUpperInvariant(), keySource = _calendar.KeySource, trakt = _calendar.TraktUsed, items };
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = e.Message });
+        }
     }
 
     /// <summary>Whether trailer streaming works right now.</summary>
@@ -37,6 +86,10 @@ public class TrailerController : ControllerBase
             lastError = _yt.LastError,
             maxHeight = Plugin.Instance?.Configuration.MaxHeight,
             verifiedOnly = Plugin.Instance?.Configuration.VerifiedOnly,
+            features = new[] { "trailers", "calendar" },
+            calendarKey = _calendar.ApiKey() is null ? "none" : _calendar.KeySource,
+            calendarError = _calendar.LastError,
+            traktConfigured = !string.IsNullOrWhiteSpace(Plugin.Instance?.Configuration.TraktClientId),
         };
     }
 
@@ -214,4 +267,12 @@ public class TrailerController : ControllerBase
         plugin.SaveConfiguration();
         return NoContent();
     }
+}
+
+/// <summary>Keys an admin can save for the calendar. Null leaves a key unchanged; empty clears it.</summary>
+public class CalendarKeys
+{
+    public string? TraktClientId { get; set; }
+
+    public string? TmdbApiKey { get; set; }
 }
