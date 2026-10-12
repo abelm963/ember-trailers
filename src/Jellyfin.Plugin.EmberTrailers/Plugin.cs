@@ -64,5 +64,6 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddSingleton<YtDlpService>();
         serviceCollection.AddSingleton<CalendarService>();
+        serviceCollection.AddSingleton<TrailerStreamer>();
     }
 }

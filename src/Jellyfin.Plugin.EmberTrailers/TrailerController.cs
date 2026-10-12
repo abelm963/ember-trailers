@@ -16,12 +16,14 @@ public class TrailerController : ControllerBase
     private readonly YtDlpService _yt;
     private readonly ILibraryManager _library;
     private readonly CalendarService _calendar;
+    private readonly TrailerStreamer _streamer;
 
-    public TrailerController(YtDlpService yt, ILibraryManager library, CalendarService calendar)
+    public TrailerController(YtDlpService yt, ILibraryManager library, CalendarService calendar, TrailerStreamer streamer)
     {
         _yt = yt;
         _library = library;
         _calendar = calendar;
+        _streamer = streamer;
     }
 
     /// <summary>
@@ -91,7 +93,8 @@ public class TrailerController : ControllerBase
             lastError = _yt.LastError,
             maxHeight = Plugin.Instance?.Configuration.MaxHeight,
             verifiedOnly = Plugin.Instance?.Configuration.VerifiedOnly,
-            features = new[] { "trailers", "calendar", "reasons", "streamtest" },
+            features = new[] { "trailers", "calendar", "reasons", "streamtest", "directstreams", "streamerrors" },
+            ffmpeg = _yt.FfmpegPath is not null,
             jsRuntime = _yt.HasDeno ? "deno" : null,
             jsRuntimeError = _yt.DenoError,
             calendarKey = _calendar.ApiKey() is null ? "none" : _calendar.KeySource,
@@ -148,6 +151,7 @@ public class TrailerController : ControllerBase
             var (r, reason) = await CheckWithReason(key, source is "override" or "tmdb-official", ct).ConfigureAwait(false);
             if (r is not null)
             {
+                _yt.WarmPlans(key);
                 return new { available = true, key, source, title = r.Title, channel = r.Channel, verified = r.Verified, duration = r.Duration };
             }
 
@@ -174,6 +178,11 @@ public class TrailerController : ControllerBase
         }
 
         var (r, reason) = await CheckWithReason(key, false, ct).ConfigureAwait(false);
+        if (r is not null)
+        {
+            _yt.WarmPlans(key);
+        }
+
         return r is null
             ? new { available = false, key, reason }
             : new { available = true, key, title = r.Title, channel = r.Channel, verified = r.Verified, duration = r.Duration };
@@ -201,25 +210,9 @@ public class TrailerController : ControllerBase
         return (meta, null);
     }
 
-    private async Task<VideoMeta?> Check(string key, bool trusted, CancellationToken ct)
-    {
-        var meta = await _yt.GetMetaAsync(key, ct).ConfigureAwait(false);
-        if (meta is null || !meta.Playable)
-        {
-            return null;
-        }
-
-        var verifiedOnly = Plugin.Instance?.Configuration.VerifiedOnly ?? true;
-        if (verifiedOnly && !trusted && !meta.Verified)
-        {
-            return null;
-        }
-
-        return meta;
-    }
-
     /// <summary>
-    /// Admin diagnostics: runs the real streaming pipeline for up to 40 seconds and reports how it went.
+    /// Admin diagnostics: runs the real streaming pipeline for up to 40 seconds and reports how it went,
+    /// including every method that was tried.
     /// </summary>
     [HttpGet("Videos/{key}/Test")]
     [Authorize(Policy = "RequiresElevation")]
@@ -239,70 +232,62 @@ public class TrailerController : ControllerBase
         }
 
         sw.Restart();
-        using var p = await _yt.StartStreamAsync(key, ct).ConfigureAwait(false);
-        var errTask = p.StandardError.ReadToEndAsync(CancellationToken.None);
-        var buffer = new byte[64 * 1024];
-        long total = 0;
-        long? firstByteMs = null;
-        byte first = 0;
-        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        limit.CancelAfter(TimeSpan.FromSeconds(40));
+        OpenedTrailer t;
         try
         {
-            int n;
-            while (total < 8_000_000 && (n = await p.StandardOutput.BaseStream.ReadAsync(buffer, limit.Token).ConfigureAwait(false)) > 0)
-            {
-                if (firstByteMs is null)
-                {
-                    firstByteMs = sw.ElapsedMilliseconds;
-                    first = buffer[0];
-                }
-
-                total += n;
-            }
+            t = await _streamer.OpenAsync(key, null, ct).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (TrailerStreamException e)
         {
+            return new { ok = false, stage = "stream", infoMs, error = e.Message, attempts = e.Attempts, deno = _yt.HasDeno, ffmpeg = _yt.FfmpegPath is not null };
+        }
+
+        var firstByteMs = sw.ElapsedMilliseconds;
+        long total = t.FirstLength;
+        await using (t)
+        {
+            var buffer = new byte[64 * 1024];
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            limit.CancelAfter(TimeSpan.FromSeconds(40));
+            try
+            {
+                int n;
+                while (total < 8_000_000 && (n = await t.Body.ReadAsync(buffer, limit.Token).ConfigureAwait(false)) > 0)
+                {
+                    total += n;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (IOException)
+            {
+            }
         }
 
         var seconds = sw.Elapsed.TotalSeconds;
-        try
-        {
-            if (!p.HasExited)
-            {
-                p.Kill(entireProcessTree: true);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-        }
-
-        var err = string.Empty;
-        try
-        {
-            err = await errTask.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-        }
-
-        var lines = err.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return new
         {
             ok = total > 500_000,
             stage = "stream",
+            method = t.Method,
             infoMs,
             firstByteMs,
             bytes = total,
             mbps = seconds > 0 ? Math.Round(total * 8 / seconds / 1_000_000, 1) : 0,
-            container = firstByteMs is null ? null : first == 0x47 ? "mpegts" : "matroska",
+            container = t.ContentType,
             deno = _yt.HasDeno,
+            ffmpeg = _yt.FfmpegPath is not null,
             channel = meta.Channel,
-            error = lines.LastOrDefault(),
+            attempts = t.Attempts,
+            error = total > 500_000 ? null : t.Attempts.LastOrDefault() ?? "The stream stopped early.",
         };
     }
 
-    /// <summary>Streams the trailer while it is fetched. Nothing is written to disk.</summary>
+    /// <summary>
+    /// Streams the trailer while it is fetched. Nothing is written to disk. When it can't be streamed the
+    /// answer is 502 with the reason in the X-Ember-Error header and a JSON body, so apps can say why.
+    /// </summary>
     [HttpGet("Videos/{key}/Stream")]
     public async Task Stream([FromRoute] string key, CancellationToken ct)
     {
@@ -312,46 +297,53 @@ public class TrailerController : ControllerBase
             return;
         }
 
-        Process p;
+        OpenedTrailer t;
         try
         {
-            p = await _yt.StartStreamAsync(key, ct).ConfigureAwait(false);
+            t = await _streamer.OpenAsync(key, Request.Headers.Range.ToString(), ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // the viewer gave up
         }
         catch (Exception e)
         {
             _yt.Fail(e.Message);
             Response.StatusCode = StatusCodes.Status502BadGateway;
+            Response.Headers["X-Ember-Error"] = HeaderSafe(e.Message);
+            await Response.WriteAsJsonAsync(
+                new { error = e.Message, attempts = (e as TrailerStreamException)?.Attempts ?? Array.Empty<string>() },
+                CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
-        using (p)
+        await using (t)
         {
-            var errTask = p.StandardError.ReadToEndAsync(CancellationToken.None);
-            var buffer = new byte[64 * 1024];
-            var stdout = p.StandardOutput.BaseStream;
-            var started = false;
+            _yt.Succeed();
+            Response.StatusCode = t.StatusCode;
+            Response.ContentType = t.ContentType;
+            Response.Headers.CacheControl = "no-store";
+            Response.Headers["X-Ember-Method"] = HeaderSafe(t.Method);
+            if (t.ContentLength is { } len)
+            {
+                Response.ContentLength = len;
+            }
+
+            if (t.ContentRange is { Length: > 0 } cr)
+            {
+                Response.Headers.ContentRange = cr;
+            }
+
+            Response.Headers.AcceptRanges = t.AcceptRanges ? "bytes" : "none";
             try
             {
+                await Response.Body.WriteAsync(t.First.AsMemory(0, t.FirstLength), ct).ConfigureAwait(false);
+                await Response.Body.FlushAsync(ct).ConfigureAwait(false);
+                var buffer = new byte[64 * 1024];
                 int n;
-                while ((n = await stdout.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+                while ((n = await t.Body.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
                 {
-                    if (!started)
-                    {
-                        started = true;
-                        // HLS arrives as MPEG-TS (starts with 0x47), joined streams as Matroska.
-                        Response.ContentType = buffer[0] == 0x47 ? "video/mp2t" : "video/x-matroska";
-                        Response.Headers.CacheControl = "no-store";
-                        _yt.Succeed();
-                    }
-
                     await Response.Body.WriteAsync(buffer.AsMemory(0, n), ct).ConfigureAwait(false);
-                }
-
-                await p.WaitForExitAsync(ct).ConfigureAwait(false);
-                if (!started)
-                {
-                    _yt.Fail(await errTask.ConfigureAwait(false));
-                    Response.StatusCode = StatusCodes.Status502BadGateway;
                 }
             }
             catch (OperationCanceledException)
@@ -362,20 +354,14 @@ public class TrailerController : ControllerBase
             {
                 // The connection closed.
             }
-            finally
-            {
-                if (!p.HasExited)
-                {
-                    try
-                    {
-                        p.Kill(entireProcessTree: true);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                    }
-                }
-            }
         }
+    }
+
+    private static string HeaderSafe(string s)
+    {
+        var line = s.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault() ?? string.Empty;
+        var clean = new string(line.Where(c => c >= ' ' && c < 127).ToArray());
+        return clean.Length > 300 ? clean[..300] : clean;
     }
 
     /// <summary>Sets (or clears, with an empty key) the trailer used for an item. Administrators only.</summary>
