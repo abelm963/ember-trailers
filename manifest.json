@@ -8,6 +8,22 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.5.1.0",
+        "changelog": "Trailers play much more reliably: the server now reads YouTube's streams directly and tries several ways (ready-made HD stream, joined picture and sound, plain file, then yt-dlp) before giving up, starts faster because the page's trailer check already prepares the stream, and tells Ember exactly why when a trailer can't play. (Jellyfin 12)",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.5.1.0.zip",
+        "checksum": "5608273442b21db731f43e75d5b7d385",
+        "timestamp": "2026-10-12T21:00:58Z"
+      },
+      {
+        "version": "0.5.0.1",
+        "changelog": "Trailers play much more reliably: the server now reads YouTube's streams directly and tries several ways (ready-made HD stream, joined picture and sound, plain file, then yt-dlp) before giving up, starts faster because the page's trailer check already prepares the stream, and tells Ember exactly why when a trailer can't play. (Jellyfin 10.11)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.5.0.1.zip",
+        "checksum": "cc18ef4b31b24fb319aa367a46acb41c",
+        "timestamp": "2026-10-12T21:00:58Z"
+      },
+      {
         "version": "0.4.1.0",
         "changelog": "Trailers start faster and more reliably: prefers YouTube's ready-combined HD streams instead of joining video and audio live. Adds a playback test for admins in Ember. (Jellyfin 12)",
         "targetAbi": "12.1.0.0",
