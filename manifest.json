@@ -8,6 +8,22 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.5.1.0",
+        "changelog": "Trailers play on Apple TV and start in a second or two: the server now passes YouTube's own HLS stream on to the app, found by the same check that picks the trailer. (Jellyfin 12)",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.5.1.0.zip",
+        "checksum": "6dfbcaa375fa6d344e0e1a721e962631",
+        "timestamp": "2026-10-25T08:29:23Z"
+      },
+      {
+        "version": "0.5.0.1",
+        "changelog": "Trailers play on Apple TV and start in a second or two: the server now passes YouTube's own HLS stream on to the app, found by the same check that picks the trailer. (Jellyfin 10.11)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.5.0.1.zip",
+        "checksum": "8044b799f6032e76a60a8033e3153a3b",
+        "timestamp": "2026-10-25T08:29:23Z"
+      },
+      {
         "version": "0.4.1.0",
         "changelog": "Trailers start faster and more reliably: prefers YouTube's ready-combined HD streams instead of joining video and audio live. Adds a playback test for admins in Ember. (Jellyfin 12)",
         "targetAbi": "12.1.0.0",

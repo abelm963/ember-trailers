@@ -16,12 +16,14 @@ public class TrailerController : ControllerBase
     private readonly YtDlpService _yt;
     private readonly ILibraryManager _library;
     private readonly CalendarService _calendar;
+    private readonly IHttpClientFactory _http;
 
-    public TrailerController(YtDlpService yt, ILibraryManager library, CalendarService calendar)
+    public TrailerController(YtDlpService yt, ILibraryManager library, CalendarService calendar, IHttpClientFactory http)
     {
         _yt = yt;
         _library = library;
         _calendar = calendar;
+        _http = http;
     }
 
     /// <summary>
@@ -91,7 +93,7 @@ public class TrailerController : ControllerBase
             lastError = _yt.LastError,
             maxHeight = Plugin.Instance?.Configuration.MaxHeight,
             verifiedOnly = Plugin.Instance?.Configuration.VerifiedOnly,
-            features = new[] { "trailers", "calendar", "reasons", "streamtest" },
+            features = new[] { "trailers", "calendar", "reasons", "streamtest", "hls" },
             jsRuntime = _yt.HasDeno ? "deno" : null,
             jsRuntimeError = _yt.DenoError,
             calendarKey = _calendar.ApiKey() is null ? "none" : _calendar.KeySource,
@@ -296,6 +298,7 @@ public class TrailerController : ControllerBase
             bytes = total,
             mbps = seconds > 0 ? Math.Round(total * 8 / seconds / 1_000_000, 1) : 0,
             container = firstByteMs is null ? null : first == 0x47 ? "mpegts" : "matroska",
+            hls = meta.Hls is not null,
             deno = _yt.HasDeno,
             channel = meta.Channel,
             error = lines.LastOrDefault(),
@@ -374,6 +377,118 @@ public class TrailerController : ControllerBase
                     {
                     }
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The trailer as HLS (all qualities in one playlist), which Apple TV's player plays natively and
+    /// starts within a second or two. Every playlist and segment is passed through this server.
+    /// </summary>
+    [HttpGet("Videos/{key}/master.m3u8")]
+    public async Task<ActionResult> Hls([FromRoute] string key, CancellationToken ct)
+    {
+        if (!YtDlpService.IsValidKey(key))
+        {
+            return BadRequest();
+        }
+
+        var (meta, reason) = await _yt.GetHlsAsync(key, ct).ConfigureAwait(false);
+        if (meta?.Hls is null || !Uri.TryCreate(meta.Hls, UriKind.Absolute, out var manifest))
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = reason ?? "No HLS version of this trailer." });
+        }
+
+        await ProxyAsync(manifest, meta.UserAgent, ct).ConfigureAwait(false);
+        return new EmptyResult();
+    }
+
+    /// <summary>One playlist or segment of an HLS trailer, fetched from YouTube for the app (see <see cref="Hls"/>).</summary>
+    [HttpGet("Videos/{key}/Proxy")]
+    public async Task<ActionResult> Proxy([FromRoute] string key, [FromQuery] string? u, CancellationToken ct)
+    {
+        var target = HlsProxy.Decode(u);
+        if (!YtDlpService.IsValidKey(key) || target is null)
+        {
+            return BadRequest();
+        }
+
+        var (meta, _) = await _yt.GetHlsAsync(key, ct).ConfigureAwait(false);
+        await ProxyAsync(target, meta?.UserAgent, ct).ConfigureAwait(false);
+        return new EmptyResult();
+    }
+
+    private async Task ProxyAsync(Uri target, string? userAgent, CancellationToken ct)
+    {
+        var client = _http.CreateClient();
+        using var req = new HttpRequestMessage(HttpMethod.Get, target);
+        if (!string.IsNullOrEmpty(userAgent))
+        {
+            req.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+        }
+
+        if (Request.Headers.Range.Count > 0)
+        {
+            req.Headers.TryAddWithoutValidation("Range", Request.Headers.Range.ToString());
+        }
+
+        HttpResponseMessage res;
+        try
+        {
+            res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        }
+        catch (HttpRequestException e)
+        {
+            _yt.Fail(e.Message);
+            Response.StatusCode = StatusCodes.Status502BadGateway;
+            return;
+        }
+
+        using (res)
+        {
+            Response.StatusCode = (int)res.StatusCode;
+            Response.Headers.CacheControl = "no-store";
+            var type = res.Content.Headers.ContentType?.ToString();
+            if (!res.IsSuccessStatusCode)
+            {
+                _yt.Fail($"YouTube answered {(int)res.StatusCode} for the trailer stream.");
+                return;
+            }
+
+            try
+            {
+                if (HlsProxy.IsPlaylist(target, type))
+                {
+                    var text = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                    var token = Request.Query["api_key"].FirstOrDefault() ?? Request.Query["ApiKey"].FirstOrDefault();
+                    Response.ContentType = "application/vnd.apple.mpegurl";
+                    await Response.WriteAsync(HlsProxy.Rewrite(text, target, token), ct).ConfigureAwait(false);
+                    _yt.Succeed();
+                    return;
+                }
+
+                Response.ContentType = type ?? "application/octet-stream";
+                if (res.Content.Headers.ContentLength is long len)
+                {
+                    Response.ContentLength = len;
+                }
+
+                if (res.Content.Headers.ContentRange is { } range)
+                {
+                    Response.Headers.ContentRange = range.ToString();
+                }
+
+                Response.Headers.AcceptRanges = "bytes";
+                await using var body = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                await body.CopyToAsync(Response.Body, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The viewer stopped watching.
+            }
+            catch (IOException)
+            {
+                // The connection closed.
             }
         }
     }
