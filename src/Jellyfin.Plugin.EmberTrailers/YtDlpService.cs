@@ -23,6 +23,8 @@ public sealed partial class YtDlpService
     private readonly IMediaEncoder _encoder;
     private readonly ILogger<YtDlpService> _log;
     private readonly ConcurrentDictionary<string, (DateTime At, VideoMeta Meta)> _meta = new();
+    private readonly ConcurrentDictionary<string, (DateTime Expires, IReadOnlyList<StreamCandidate> Plans)> _plans = new();
+    private readonly ConcurrentDictionary<string, Task<(VideoMeta?, IReadOnlyList<StreamCandidate>, string?)>> _inflight = new();
     private readonly SemaphoreSlim _updateLock = new(1, 1);
 
     public YtDlpService(IHttpClientFactory http, IMediaEncoder encoder, ILogger<YtDlpService> log)
@@ -171,6 +173,9 @@ public sealed partial class YtDlpService
 
     public string? DenoError { get; private set; }
 
+    /// <summary>Gets the path of Jellyfin's own ffmpeg, or null.</summary>
+    public string? FfmpegPath => _encoder.EncoderPath is { Length: > 0 } f && File.Exists(f) ? f : null;
+
     private static string? DenoTarget()
     {
         var arch = RuntimeInformation.OSArchitecture;
@@ -240,6 +245,7 @@ public sealed partial class YtDlpService
 
             DenoError = null;
             _meta.Clear(); // earlier failures may have been for lack of Deno
+            _plans.Clear();
             _log.LogInformation("Ember Trailers: Deno installed for yt-dlp");
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -278,15 +284,84 @@ public sealed partial class YtDlpService
             return (hit.Meta, null);
         }
 
+        var (meta, _, reason) = await FetchAsync(key, null, ct).ConfigureAwait(false);
+        return (meta, reason);
+    }
+
+    /// <summary>
+    /// The ways the server can stream a video right now, best first (direct YouTube addresses that expire
+    /// after a few hours, so they are cached until shortly before then). <paramref name="altClients"/> asks
+    /// YouTube as other kinds of player, which helps when the usual answer's addresses are refused.
+    /// </summary>
+    public async Task<(IReadOnlyList<StreamCandidate> Plans, string? Reason)> GetPlansAsync(string key, bool altClients, CancellationToken ct)
+    {
+        var cacheKey = altClients ? key + "|alt" : key;
+        if (_plans.TryGetValue(cacheKey, out var hit) && DateTime.UtcNow < hit.Expires)
+        {
+            return (hit.Plans, null);
+        }
+
+        // One lookup per video at a time: a page's early check and the player's request share it.
+        var task = _inflight.GetOrAdd(cacheKey, _ => FetchAsync(key, altClients ? AltClientArgs : null, CancellationToken.None));
+        try
+        {
+            var (_, plans, reason) = await task.WaitAsync(ct).ConfigureAwait(false);
+            return (plans, reason);
+        }
+        finally
+        {
+            if (task.IsCompleted)
+            {
+                _inflight.TryRemove(new KeyValuePair<string, Task<(VideoMeta?, IReadOnlyList<StreamCandidate>, string?)>>(cacheKey, task));
+            }
+        }
+    }
+
+    /// <summary>Looks up the stream addresses in the background if they aren't cached, so playback starts at once.</summary>
+    public void WarmPlans(string key)
+    {
+        if (_plans.TryGetValue(key, out var hit) && DateTime.UtcNow < hit.Expires)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await GetPlansAsync(key, false, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _log.LogDebug(e, "Ember Trailers: warming {Key} failed", key);
+            }
+        });
+    }
+
+    /// <summary>Forgets the cached stream addresses for a video (after YouTube refused them).</summary>
+    public void ForgetPlans(string key)
+    {
+        _plans.TryRemove(key, out _);
+        _plans.TryRemove(key + "|alt", out _);
+    }
+
+    private static readonly string[] AltClientArgs = { "--extractor-args", "youtube:player_client=android_vr,tv,web_safari" };
+
+    private async Task<(VideoMeta? Meta, IReadOnlyList<StreamCandidate> Plans, string? Reason)> FetchAsync(string key, string[]? extra, CancellationToken ct)
+    {
         await EnsureAsync(ct).ConfigureAwait(false);
-        var (code, output, error) = await RunAsync(
-            new[] { "-J", "--no-playlist", "--no-warnings", "--skip-download", $"https://www.youtube.com/watch?v={key}" },
-            TimeSpan.FromSeconds(45),
-            ct).ConfigureAwait(false);
+        var args = new List<string> { "-J", "--no-playlist", "--no-warnings", "--skip-download" };
+        if (extra is not null)
+        {
+            args.AddRange(extra);
+        }
+
+        args.Add($"https://www.youtube.com/watch?v={key}");
+        var (code, output, error) = await RunAsync(args, TimeSpan.FromSeconds(45), ct).ConfigureAwait(false);
         if (code != 0)
         {
             Fail(error);
-            return (null, "YouTube: " + LastError);
+            return (null, Array.Empty<StreamCandidate>(), "YouTube: " + LastError);
         }
 
         try
@@ -304,13 +379,19 @@ public sealed partial class YtDlpService
                 hls,
                 agent);
             _meta[key] = (DateTime.UtcNow, meta);
+            var plans = StreamPlanner.Plan(r, Math.Clamp(Config.MaxHeight, 360, 2160));
+            if (plans.Count > 0)
+            {
+                _plans[extra is null ? key : key + "|alt"] = (StreamPlanner.ExpiresAt(plans), plans);
+            }
+
             Succeed();
-            return (meta, null);
+            return (meta, plans, plans.Count == 0 ? "YouTube offered no format the server can stream." : null);
         }
         catch (JsonException e)
         {
             Fail(e.Message);
-            return (null, "Couldn't read YouTube's answer");
+            return (null, Array.Empty<StreamCandidate>(), "Couldn't read YouTube's answer");
         }
     }
 
@@ -371,7 +452,7 @@ public sealed partial class YtDlpService
         return (meta, reason);
     }
 
-    private static string Str(JsonElement e, string name) =>
+    internal static string Str(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
 
     /// <summary>
@@ -394,8 +475,8 @@ public sealed partial class YtDlpService
             "--hls-use-mpegts",
             "-o", "-",
         };
-        var ffmpeg = _encoder.EncoderPath;
-        if (!string.IsNullOrWhiteSpace(ffmpeg) && File.Exists(ffmpeg))
+        var ffmpeg = FfmpegPath;
+        if (ffmpeg is not null)
         {
             args.Add("--ffmpeg-location");
             args.Add(ffmpeg);
