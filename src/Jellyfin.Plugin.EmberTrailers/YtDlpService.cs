@@ -8,12 +8,17 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.EmberTrailers;
 
-public sealed record VideoMeta(string Key, string Title, string Channel, bool Verified, double Duration, bool Playable);
+/// <param name="Hls">YouTube's HLS manifest for this video, when it offers one (only valid from this server for a few hours).</param>
+/// <param name="UserAgent">The browser identity yt-dlp used, which YouTube expects on the stream requests too.</param>
+public sealed record VideoMeta(string Key, string Title, string Channel, bool Verified, double Duration, bool Playable, string? Hls = null, string? UserAgent = null);
 
 /// <summary>Keeps yt-dlp present and up to date, checks videos, and streams them.</summary>
 public sealed partial class YtDlpService
 {
     private static readonly TimeSpan MetaTtl = TimeSpan.FromHours(24);
+
+    // YouTube's stream addresses expire after about six hours; look them up again well before.
+    private static readonly TimeSpan HlsTtl = TimeSpan.FromHours(4);
     private readonly IHttpClientFactory _http;
     private readonly IMediaEncoder _encoder;
     private readonly ILogger<YtDlpService> _log;
@@ -363,13 +368,16 @@ public sealed partial class YtDlpService
         {
             using var doc = JsonDocument.Parse(output);
             var r = doc.RootElement;
+            var (hls, agent) = FindHls(r);
             var meta = new VideoMeta(
                 key,
                 Str(r, "title"),
                 Str(r, "channel") is { Length: > 0 } c ? c : Str(r, "uploader"),
                 r.TryGetProperty("channel_is_verified", out var v) && v.ValueKind == JsonValueKind.True,
                 r.TryGetProperty("duration", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetDouble() : 0,
-                Str(r, "availability") is "" or "public" or "unlisted");
+                Str(r, "availability") is "" or "public" or "unlisted",
+                hls,
+                agent);
             _meta[key] = (DateTime.UtcNow, meta);
             var plans = StreamPlanner.Plan(r, Math.Clamp(Config.MaxHeight, 360, 2160));
             if (plans.Count > 0)
@@ -385,6 +393,63 @@ public sealed partial class YtDlpService
             Fail(e.Message);
             return (null, Array.Empty<StreamCandidate>(), "Couldn't read YouTube's answer");
         }
+    }
+
+    /// <summary>
+    /// YouTube's HLS manifest (all qualities in one playlist) from yt-dlp's list of formats, and the
+    /// browser identity to fetch it with. The same lookup that checks a trailer finds it, so playing
+    /// the trailer afterwards needs no second call to yt-dlp.
+    /// </summary>
+    private static (string? Manifest, string? UserAgent) FindHls(JsonElement r)
+    {
+        if (!r.TryGetProperty("formats", out var formats) || formats.ValueKind != JsonValueKind.Array)
+        {
+            return (null, null);
+        }
+
+        foreach (var f in formats.EnumerateArray())
+        {
+            if (!Str(f, "protocol").StartsWith("m3u8", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var manifest = Str(f, "manifest_url");
+            if (manifest.Length == 0 || !Uri.TryCreate(manifest, UriKind.Absolute, out var u) || !HlsProxy.IsAllowed(u))
+            {
+                continue;
+            }
+
+            string? agent = null;
+            if (f.TryGetProperty("http_headers", out var h) && h.ValueKind == JsonValueKind.Object)
+            {
+                agent = Str(h, "User-Agent") is { Length: > 0 } a ? a : null;
+            }
+
+            return (manifest, agent);
+        }
+
+        return (null, null);
+    }
+
+    /// <summary>
+    /// The trailer's HLS manifest, looked up again when the saved one is getting old.
+    /// Null (with a reason) when YouTube offers no HLS version of this video.
+    /// </summary>
+    public async Task<(VideoMeta? Meta, string? Reason)> GetHlsAsync(string key, CancellationToken ct)
+    {
+        if (_meta.TryGetValue(key, out var hit) && (hit.Meta.Hls is null || DateTime.UtcNow - hit.At >= HlsTtl))
+        {
+            _meta.TryRemove(key, out _);
+        }
+
+        var (meta, reason) = await GetMetaWithReasonAsync(key, ct).ConfigureAwait(false);
+        if (meta is not null && meta.Hls is null)
+        {
+            return (null, "YouTube offers no HLS version of this trailer.");
+        }
+
+        return (meta, reason);
     }
 
     internal static string Str(JsonElement e, string name) =>

@@ -8,20 +8,36 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.6.1.0",
+        "changelog": "Trailers play much more reliably: the server reads YouTube's streams directly and tries several ways (ready-made HD stream, joined picture and sound, plain file, other YouTube player kinds, then yt-dlp) before giving up, starts faster because the title page's check already prepares the stream, and tells Ember exactly why when a trailer can't play. Keeps the HLS stream for Apple TV from 0.5. (Jellyfin 12)",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.6.1.0.zip",
+        "checksum": "f8618e71c711a20d33fefb4e76d26e0e",
+        "timestamp": "2026-10-29T07:57:29Z"
+      },
+      {
+        "version": "0.6.0.1",
+        "changelog": "Trailers play much more reliably: the server reads YouTube's streams directly and tries several ways (ready-made HD stream, joined picture and sound, plain file, other YouTube player kinds, then yt-dlp) before giving up, starts faster because the title page's check already prepares the stream, and tells Ember exactly why when a trailer can't play. Keeps the HLS stream for Apple TV from 0.5. (Jellyfin 10.11)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.6.0.1.zip",
+        "checksum": "1ed84a3b57fd2b190ff5d8323ad8747d",
+        "timestamp": "2026-10-29T07:57:29Z"
+      },
+      {
         "version": "0.5.1.0",
-        "changelog": "Trailers play much more reliably: the server now reads YouTube's streams directly and tries several ways (ready-made HD stream, joined picture and sound, plain file, then yt-dlp) before giving up, starts faster because the page's trailer check already prepares the stream, and tells Ember exactly why when a trailer can't play. (Jellyfin 12)",
+        "changelog": "Trailers play on Apple TV and start in a second or two: the server now passes YouTube's own HLS stream on to the app, found by the same check that picks the trailer. (Jellyfin 12)",
         "targetAbi": "12.1.0.0",
         "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.5.1.0.zip",
-        "checksum": "5608273442b21db731f43e75d5b7d385",
-        "timestamp": "2026-10-12T21:00:58Z"
+        "checksum": "6dfbcaa375fa6d344e0e1a721e962631",
+        "timestamp": "2026-10-25T08:29:23Z"
       },
       {
         "version": "0.5.0.1",
-        "changelog": "Trailers play much more reliably: the server now reads YouTube's streams directly and tries several ways (ready-made HD stream, joined picture and sound, plain file, then yt-dlp) before giving up, starts faster because the page's trailer check already prepares the stream, and tells Ember exactly why when a trailer can't play. (Jellyfin 10.11)",
+        "changelog": "Trailers play on Apple TV and start in a second or two: the server now passes YouTube's own HLS stream on to the app, found by the same check that picks the trailer. (Jellyfin 10.11)",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://raw.githubusercontent.com/abelm963/ember-trailers/main/releases/ember-trailers_0.5.0.1.zip",
-        "checksum": "cc18ef4b31b24fb319aa367a46acb41c",
-        "timestamp": "2026-10-12T21:00:58Z"
+        "checksum": "8044b799f6032e76a60a8033e3153a3b",
+        "timestamp": "2026-10-25T08:29:23Z"
       },
       {
         "version": "0.4.1.0",
